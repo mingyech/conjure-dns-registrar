@@ -59,7 +59,7 @@ func sampleUTLSDistribution(spec string) (*utls.ClientHelloID, error) {
 	return ids[sampleWeighted(weights)], nil
 }
 
-func sendHandshake(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byte, payload []byte) (*noise.CipherState, *noise.CipherState, error) {
+func sendHandshake(send func([]byte) error, pubkey []byte, payload []byte) (*noise.CipherState, *noise.CipherState, error) {
 
 	config := encryption.NewConfig()
 	config.Initiator = true
@@ -76,26 +76,25 @@ func sendHandshake(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byte, pay
 	if err != nil {
 		return nil, nil, err
 	}
-	_, err = pconn.WriteTo(msgToSend, remoteAddr)
+	err = send(msgToSend)
 	if err != nil {
 		return nil, nil, err
 	}
 	return recvCipher, sendCipher, nil
 }
 
-func handle(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byte, sendBytes []byte) ([]byte, error) {
-	recvCipher, _, err := sendHandshake(pconn, remoteAddr, pubkey, sendBytes)
+func handle(send func([]byte) error, recv func() ([]byte, error), remoteAddr net.Addr, pubkey []byte, sendBytes []byte) ([]byte, error) {
+	recvCipher, _, err := sendHandshake(send, pubkey, sendBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	var recvBuf [4096]byte
-	_, _, err = pconn.ReadFrom(recvBuf[:])
+	recvBuf, err := recv()
 	if err != nil {
 		return nil, err
 	}
 
-	encryptedBuf, err := msgformat.RemoveFormat(recvBuf[:])
+	encryptedBuf, err := msgformat.RemoveFormat(recvBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +111,21 @@ func handle(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byte, sendBytes 
 func run(domain dns.Name, remoteAddr net.Addr, pconn net.PacketConn, msg string, pubkey []byte) error {
 	defer pconn.Close()
 
-	recvBytes, err := handle(pconn, remoteAddr, pubkey, []byte(msg))
+	send := func(p []byte) error {
+		_, err := pconn.WriteTo(p, remoteAddr)
+		return err
+	}
+
+	recv := func() ([]byte, error) {
+		var readBuf [4096]byte
+		_, _, err := pconn.ReadFrom(readBuf[:])
+		if err != nil {
+			return nil, err
+		}
+		return readBuf[:], nil
+	}
+
+	recvBytes, err := handle(send, recv, remoteAddr, pubkey, []byte(msg))
 	if err != nil {
 		log.Printf("handle: %v\n", err)
 	}
